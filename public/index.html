@@ -629,14 +629,14 @@
 
     <div class="header">
         <h1>Android Surveillance Hub</h1>
-        <div id="status">Connecting to server...</div>
-        <button id="retryButton">Retry Connection</button>
-        <div id="client-selector" style="margin-top: 10px; padding: 10px; background: #1a1a1a; border: 1px solid #00ff00; border-radius: 8px;">
-            <label style="color: #00ff00;">Select Android Client:</label>
-            <select id="clientSelect" style="margin-left: 10px; padding: 5px; background: #111; color: #00ff00; border: 1px solid #00ff00; border-radius: 4px;">
-                <option value="">-- No clients connected</option>
+        <div style="margin: 12px auto; max-width: 600px;">
+            <label style="color: #00ff00; margin-right: 8px;">Select Device:</label>
+            <select id="clientSelector" style="background: #111827; border: 1px solid #00ff00; color: #00ff00; padding: 4px 8px; border-radius: 4px; min-width: 200px;">
+                <option value="">No devices connected</option>
             </select>
         </div>
+        <div id="status">Connecting to server...</div>
+        <button id="retryButton">Retry Connection</button>
     </div>
     
     <div class="main-content">

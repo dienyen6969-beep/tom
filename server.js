@@ -38,7 +38,7 @@ app.get('*', (req, res) => {
 });
 
 let webClients = new Set();
-let androidClients = new Map(); // Map: socket.id -> { id, ip }
+let androidClients = new Set();
 
 io.on('connection', socket => {
   console.log(`Client connected: ${socket.id} from ${socket.handshake.address}`);
@@ -48,23 +48,27 @@ io.on('connection', socket => {
     console.log(`Client ${socket.id} identified as: ${type}`);
     if (type === 'web') {
       webClients.add(socket.id);
-      // Send list of all connected Android clients to this web client
-      const androidList = Array.from(androidClients.values());
-      socket.emit('android-clients-list', androidList);
+      // Send all connected Android clients to the web
+      const androidClientList = Array.from(androidClients).map(id => ({
+        id: id,
+        address: io.sockets.sockets.get(id)?.handshake?.address || 'Unknown'
+      }));
+      socket.emit('android-clients-list', androidClientList);
       
-      // Notify existing Android clients about this new web client
-      androidClients.forEach((_, androidId) => {
+      // Notify all existing Android clients about new web client
+      androidClients.forEach(androidId => {
+        console.log(`Notifying Android ${androidId} about web client ${socket.id}`);
         io.to(androidId).emit('web-client-ready', socket.id);
       });
     } else if (type === 'android') {
-      const clientIp = socket.handshake.address;
-      androidClients.set(socket.id, { id: socket.id, ip: clientIp });
-      
-      // Notify all web clients about this new Android client
-      const androidList = Array.from(androidClients.values());
+      androidClients.add(socket.id);
+      // Send new Android client info to all web clients
+      const newAndroidInfo = {
+        id: socket.id,
+        address: socket.handshake.address
+      };
       webClients.forEach(webId => {
-        io.to(webId).emit('android-clients-list', androidList);
-        socket.emit('web-client-ready', webId);
+        io.to(webId).emit('android-client-connected', newAndroidInfo);
       });
     }
     console.log(`Clients - Web: ${webClients.size}, Android: ${androidClients.size}`);
@@ -198,16 +202,13 @@ io.on('connection', socket => {
     const wasWeb = webClients.delete(socket.id);
     const wasAndroid = androidClients.delete(socket.id);
     if (wasWeb) {
-      androidClients.forEach((_, androidId) => {
+      androidClients.forEach(androidId => {
         io.to(androidId).emit('web-client-disconnected', socket.id);
       });
     }
     if (wasAndroid) {
-      // Send updated list to all web clients
-      const androidList = Array.from(androidClients.values());
       webClients.forEach(webId => {
         io.to(webId).emit('android-client-disconnected', socket.id);
-        io.to(webId).emit('android-clients-list', androidList);
       });
     }
     console.log(`Clients - Web: ${webClients.size}, Android: ${androidClients.size}`);

