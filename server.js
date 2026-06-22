@@ -13,6 +13,8 @@ const io = new Server(server, {
     credentials: false,
     transports: ['websocket', 'polling']
   },
+  allowEIO3: true,
+  transports: ['websocket', 'polling'],
   pingInterval: 25000,
   pingTimeout: 60000,
   allowUpgrades: true
