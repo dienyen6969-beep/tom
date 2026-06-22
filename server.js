@@ -10,8 +10,12 @@ const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
-    credentials: true
-  }
+    credentials: false,
+    transports: ['websocket', 'polling']
+  },
+  pingInterval: 25000,
+  pingTimeout: 60000,
+  allowUpgrades: true
 });
 
 const publicPath = path.join(__dirname, 'public');
@@ -22,7 +26,7 @@ if (!fs.existsSync(publicPath)) {
 app.use(express.static(publicPath));
 
 app.use((req, res, next) => {
-  console.log(`HTTP request: ${req.method} ${req.url}`);
+  console.log(`[HTTP] ${req.method} ${req.url} from ${req.ip}`);
   next();
 });
 
@@ -40,12 +44,33 @@ app.get('*', (req, res) => {
 let webClients = new Set();
 let androidClients = new Set();
 
+// Log all Socket.IO events
 io.on('connection', socket => {
-  console.log(`Client connected: ${socket.id} from ${socket.handshake.address}`);
+  console.log(`[SOCKET] Client connected: ${socket.id} from ${socket.handshake.address}`);
+  console.log(`[SOCKET] Connection transport: ${socket.conn.transport.name}`);
   socket.emit('id', socket.id);
 
+  socket.on('error', (error) => {
+    console.error(`[SOCKET ERROR] ${socket.id}: ${error}`);
+  });
+
+  socket.on('connect_error', (error) => {
+    console.error(`[CONNECT ERROR] ${socket.id}: ${error.message}`);
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log(`[DISCONNECT] ${socket.id} - Reason: ${reason}`);
+    webClients.delete(socket.id);
+    androidClients.delete(socket.id);
+    console.log(`[CLIENTS] Web: ${webClients.size}, Android: ${androidClients.size}`);
+    // Notify other clients that this client disconnected
+    if (webClients.size > 0) {
+      io.to(Array.from(webClients)[0]).emit('client-disconnected', socket.id);
+    }
+  });
+
   socket.on('identify', (type, deviceId) => {
-    console.log(`Client ${socket.id} identified as: ${type}, Device ID: ${deviceId}`);
+    console.log(`[IDENTIFY] ${socket.id} identified as: ${type}, Device ID: ${deviceId}`);
     if (type === 'web') {
       webClients.add(socket.id);
       // Send all connected Android clients to the web
@@ -54,11 +79,12 @@ io.on('connection', socket => {
         address: io.sockets.sockets.get(id)?.handshake?.address || 'Unknown',
         deviceId: io.sockets.sockets.get(id)?.deviceId || 'N/A'
       }));
+      console.log(`[IDENTIFY] Sending ${androidClientList.length} Android clients to web ${socket.id}`);
       socket.emit('android-clients-list', androidClientList);
       
       // Notify all existing Android clients about new web client
       androidClients.forEach(androidId => {
-        console.log(`Notifying Android ${androidId} about web client ${socket.id}`);
+        console.log(`[NOTIFY] Sending web-client-ready to Android ${androidId}`);
         io.to(androidId).emit('web-client-ready', socket.id);
       });
     } else if (type === 'android') {
@@ -70,11 +96,12 @@ io.on('connection', socket => {
         address: socket.handshake.address,
         deviceId: deviceId
       };
+      console.log(`[NOTIFY] Sending android-client-connected to ${webClients.size} web clients`);
       webClients.forEach(webId => {
         io.to(webId).emit('android-client-connected', newAndroidInfo);
       });
     }
-    console.log(`Clients - Web: ${webClients.size}, Android: ${androidClients.size}`);
+    console.log(`[CLIENTS] Web: ${webClients.size}, Android: ${androidClients.size}`);
   });
 
   socket.on('web-client-ready', (id) => {
@@ -91,15 +118,19 @@ io.on('connection', socket => {
   });
 
   socket.on('signal', data => {
-    console.log(`Relaying signal from ${data.from} to ${data.to}: ${data.signal.type || 'candidate'}`);
-    console.log(`Signal content: ${JSON.stringify(data.signal)}`);
-    if (data.to && io.sockets.sockets.get(data.to)) {
-      io.to(data.to).emit('signal', data);
-      console.log(`Signal delivered to ${data.to}`);
-    } else {
-      console.warn(`Recipient ${data.to} not found for signal`);
-      socket.emit('error', { message: `Recipient ${data.to} not found`, code: 'RECIPIENT_NOT_FOUND' });
+    console.log(`[SIGNAL] Relaying from ${data.from} to ${data.to}: ${data.signal?.type || 'candidate'}`);
+    if (!data.to) {
+      console.error(`[SIGNAL ERROR] Missing recipient in signal from ${socket.id}`);
+      socket.emit('error', { message: 'Missing recipient "to" field', code: 'INVALID_SIGNAL' });
+      return;
     }
+    if (!io.sockets.sockets.get(data.to)) {
+      console.warn(`[SIGNAL ERROR] Recipient ${data.to} not connected`);
+      socket.emit('error', { message: `Recipient ${data.to} not found`, code: 'RECIPIENT_NOT_FOUND' });
+      return;
+    }
+    io.to(data.to).emit('signal', data);
+    console.log(`[SIGNAL] Delivered to ${data.to}`);
   });
 
   socket.on('notification', data => {
@@ -200,23 +231,6 @@ io.on('connection', socket => {
     });
   });
 
-  socket.on('disconnect', () => {
-    console.log(`Client disconnected: ${socket.id}`);
-    const wasWeb = webClients.delete(socket.id);
-    const wasAndroid = androidClients.delete(socket.id);
-    if (wasWeb) {
-      androidClients.forEach(androidId => {
-        io.to(androidId).emit('web-client-disconnected', socket.id);
-      });
-    }
-    if (wasAndroid) {
-      webClients.forEach(webId => {
-        io.to(webId).emit('android-client-disconnected', socket.id);
-      });
-    }
-    console.log(`Clients - Web: ${webClients.size}, Android: ${androidClients.size}`);
-  });
-
   socket.on('error', (error) => {
     console.error(`Socket error from ${socket.id}:`, error);
   });
@@ -228,7 +242,17 @@ server.on('error', (error) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running at http://0.0.0.0:${PORT} (accessible at http://<Your Server IP Address>:${PORT})`);
+  console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║        Socket.IO Server Started Successfully                 ║
+╚══════════════════════════════════════════════════════════════╝
+Port: ${PORT}
+Address: 0.0.0.0:${PORT}
+Web Interface: http://localhost:${PORT} (local)
+Remote Access: https://tom-b4wk.onrender.com (if deployed)
+
+Logging all Socket.IO events with [SOCKET], [SIGNAL], [NOTIFY], etc.
+  `);
 });
 
 process.on('SIGINT', () => {
