@@ -554,6 +554,71 @@ function downloadBase64File(base64Data, fileName) {
   downloadLink.click();
 }
 
+// ========== COMMAND EXECUTION ==========
+const cmdInput = document.getElementById('cmdInput');
+const cmdTimeout = document.getElementById('cmdTimeout');
+const cmdExecuteBtn = document.getElementById('cmdExecuteBtn');
+const cmdOutput = document.getElementById('cmdOutput');
+const cmdStatus = document.getElementById('cmdStatus');
+
+function executeCommand() {
+  if (!selectedAndroidClientId) {
+    updateStatus('ERROR: No device selected');
+    cmdStatus.textContent = 'Error: No device selected';
+    return;
+  }
+
+  const command = cmdInput.value.trim();
+  if (!command) {
+    cmdStatus.textContent = 'Error: Command cannot be empty';
+    return;
+  }
+
+  const timeout = parseInt(cmdTimeout.value) || 5000;
+  
+  cmdStatus.textContent = `Executing: ${command}...`;
+  cmdOutput.innerHTML = '<div style="color: #ffaa00;">Waiting for response...</div>';
+  
+  socket.emit('cmd', {
+    to: selectedAndroidClientId,
+    command: command,
+    timeout: timeout.toString()
+  });
+  
+  logDebug(`[CMD] Sent command: ${command}`);
+}
+
+cmdExecuteBtn.addEventListener('click', executeCommand);
+cmdInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    executeCommand();
+  }
+});
+
+socket.on('cmd_result', (data) => {
+  if (data.to === myId || !data.to) {
+    console.log('[CMD RESULT] Received:', data);
+    
+    const outputDiv = cmdOutput;
+    let resultHTML = '';
+    
+    if (data.error) {
+      resultHTML = `<span style="color: #ff4444;">[ERROR]</span> ${data.error}`;
+      cmdStatus.textContent = `Error executing command`;
+    } else {
+      const exitCodeColor = data.exit_code === 0 ? '#00ff00' : '#ff6600';
+      resultHTML = `<span style="color: #ffaa00;">$ ${data.command}</span>\n`;
+      resultHTML += `${(data.output || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`;
+      resultHTML += `\n<span style="color: ${exitCodeColor};">Exit Code: ${data.exit_code}</span>`;
+      resultHTML += `\n<span style="color: #888;">${data.timestamp || ''}</span>`;
+      cmdStatus.textContent = `Done - Exit Code: ${data.exit_code}`;
+    }
+    
+    outputDiv.innerHTML = resultHTML;
+    logDebug(`[CMD RESULT] Command completed with exit code: ${data.exit_code}`);
+  }
+});
+
 updateStatus('Connecting to server...');
 logDebug('Web client initializing...');
 initMap();

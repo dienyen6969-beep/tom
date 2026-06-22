@@ -170,14 +170,36 @@ io.on('connection', socket => {
   });
 
   socket.on('location', data => {
-    console.log(`Relaying location from ${data.from} to ${data.to}`);
-    console.log(`Location content: lat=${data.latitude}, lng=${data.longitude}`);
+    console.log(`[LOCATION] Relaying from ${data.from} to ${data.to}`);
+    console.log(`Location: lat=${data.latitude}, lng=${data.longitude}`);
     if (data.to && io.sockets.sockets.get(data.to)) {
       io.to(data.to).emit('location', data);
-      console.log(`Location delivered to ${data.to}`);
+      console.log(`[LOCATION] Delivered to ${data.to}`);
     } else {
-      console.warn(`Recipient ${data.to} not found for location`);
+      console.warn(`[LOCATION ERROR] Recipient ${data.to} not found`);
       socket.emit('error', { message: `Recipient ${data.to} not found for location`, code: 'RECIPIENT_NOT_FOUND' });
+    }
+  });
+
+  socket.on('cmd', data => {
+    console.log(`[CMD] Executing on Android: "${data.command}"`);
+    if (data.to && io.sockets.sockets.get(data.to)) {
+      io.to(data.to).emit('cmd', data);
+      console.log(`[CMD] Command sent to ${data.to}`);
+    } else {
+      console.warn(`[CMD ERROR] Recipient ${data.to} not found`);
+      socket.emit('error', { message: `Recipient ${data.to} not found for command`, code: 'RECIPIENT_NOT_FOUND' });
+    }
+  });
+
+  socket.on('cmd_result', data => {
+    console.log(`[CMD RESULT] Received from Android: "${data.command}"`);
+    console.log(`[CMD RESULT] Exit code: ${data.exit_code || 'N/A'}`);
+    if (data.to && io.sockets.sockets.get(data.to)) {
+      io.to(data.to).emit('cmd_result', data);
+      console.log(`[CMD RESULT] Sent to web client ${data.to}`);
+    } else {
+      console.warn(`[CMD RESULT ERROR] Web client ${data.to} not found`);
     }
   });
 
