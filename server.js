@@ -73,7 +73,6 @@ io.on('connection', socket => {
     console.log(`[IDENTIFY] ${socket.id} identified as: ${type}, Device ID: ${deviceId}`);
     if (type === 'web') {
       webClients.add(socket.id);
-      // Send all connected Android clients to the web
       const androidClientList = Array.from(androidClients).map(id => ({
         id: id,
         address: io.sockets.sockets.get(id)?.handshake?.address || 'Unknown',
@@ -81,16 +80,14 @@ io.on('connection', socket => {
       }));
       console.log(`[IDENTIFY] Sending ${androidClientList.length} Android clients to web ${socket.id}`);
       socket.emit('android-clients-list', androidClientList);
-      
-      // Notify all existing Android clients about new web client
       androidClients.forEach(androidId => {
-        console.log(`[NOTIFY] Sending web-client-ready to Android ${androidId}`);
         io.to(androidId).emit('web-client-ready', socket.id);
       });
     } else if (type === 'android') {
       androidClients.add(socket.id);
-      io.sockets.sockets.get(socket.id).deviceId = deviceId; // Store deviceId with socket
-      // Send new Android client info to all web clients
+      if (io.sockets.sockets.get(socket.id)) {
+        io.sockets.sockets.get(socket.id).deviceId = deviceId;
+      }
       const newAndroidInfo = {
         id: socket.id,
         address: socket.handshake.address,
@@ -100,6 +97,11 @@ io.on('connection', socket => {
       webClients.forEach(webId => {
         io.to(webId).emit('android-client-connected', newAndroidInfo);
       });
+      if (webClients.size > 0) {
+        const firstWeb = Array.from(webClients)[0];
+        io.to(socket.id).emit('web-client-ready', firstWeb);
+        console.log(`[NOTIFY] Sent web-client-ready to Android ${socket.id} for web ${firstWeb}`);
+      }
     }
     console.log(`[CLIENTS] Web: ${webClients.size}, Android: ${androidClients.size}`);
   });
